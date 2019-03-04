@@ -1,4 +1,4 @@
-// Requires hexagon.js, HexGameState.js
+// Requires hexagon.js, HexGameState.js, HexSolver.js
 
 /**
  * Delay, in ms, after which a click is recognized as a drag
@@ -12,11 +12,40 @@ const CLICK_DELAY = 250;
 class HexGameBoard {
   /**
    * Constructs a new game board
-   * @param {object|number} init either an object representing the board layout and move number or one of the preset board layouts (0 - 3 available)
+   * @param {object|number} init either an object representing the board layout and move number or one of the preset board layouts (see DEFAULT_BOARDS);
+   * use -1 for a random board layout
    * @param {HexMenu} [menu] the Hexagon game menu
    */
   constructor(init, menu = null) {
+    if (init == -1) { // random map
+      let sz = Math.floor(Math.random() * 7 + 4);
+      let board = [];
+      let fields = 0; let lx = 0; let ly = 0;
+      for (let y = 0; y < sz; y++) {
+        board[y] = [];
+        for (let x = 0; x < sz; x++) {
+          if ((y + sz + 1) % 2 && x == sz - 1) board[y][x] = NaN;
+          else {
+            board[y][x] = Math.random() > 0.5 ? 0 : NaN;
+            if (!isNaN(board[y][x])) {
+              fields++;
+              lx = x; ly = y;
+            }
+          }
+        }
+      }
+      if (fields % 2 == 0) {
+        board[ly][lx] = NaN;
+        fields--;
+      }
+      init = {
+        name: 'Random Board',
+        board,
+        moves: (fields - 1) / 2,
+      };
+    }
     this._gameState = new HexGameState(init);
+    this._stateStack = [this._gameState];
     this._canvas = document.createElement('canvas');
     this._canvas.width = window.innerWidth;
     this._canvas.height = window.innerHeight;
@@ -34,6 +63,11 @@ class HexGameBoard {
     this._yD = this._hexSize * Math.sin(Math.PI / 6);
     this._hoverCoords = [-1, -1];
 
+    let drawingHeight = (this._hexSize + this._yD) * (this._gameState.board.length + 2) + this._yD;
+    let drawingWidth = this._xD * 2 * (this._gameState.board[0].length + 1 + 2 * 2.5); // 2.5 is approximation for 'Player 1' text width
+    while (this._scale > 0.1 && (drawingWidth * this._scale > window.innerWidth) || (drawingHeight * this._scale > window.innerHeight))
+      this._scale /= 1.5;
+
     this._mouseDownTime = 0;
     this._lastMouseCoords = [0, 0];
     this._mouseIsDown = false;
@@ -41,6 +75,9 @@ class HexGameBoard {
     this._isShutDown = false;
     this._noOps = false;
     this._menu = menu;
+    
+    this._cMoveOpts = [];
+    this._hMoveOpts = [];
 
     window.addEventListener('resize', () => this.resize());
     window.addEventListener('wheel', evt => this.mouseWheel(evt));
@@ -139,7 +176,30 @@ class HexGameBoard {
           }
 
           if (board[by][x] == 0) {
-            if (fieldVals[by][x] != 0) {
+            if (by < this._cMoveOpts.length && x < this._cMoveOpts[by].length) {
+              if (this._cMoveOpts[by][x] == 0) {
+                con.fillStyle = 'rgba(36, 63, 65, 1)';
+                con.fillText('D', xp, yp);
+              } else if (this._cMoveOpts[by][x] == 1) {
+                con.fillStyle = 'rgba(193, 74, 64, 1)';
+                con.fillText('P2', xp, yp);
+              } else if (this._cMoveOpts[by][x] == -1) {
+                con.fillStyle = 'rgba(72, 180, 145, 1)';
+                con.fillText('P1', xp, yp);
+              } else if (this._cMoveOpts[by][x] >= 2 && this._cMoveOpts[by][x] <= 4) {
+                let val = this._cMoveOpts[by][x] - 3;
+                if (Math.abs(val) < 0.1) {
+                  con.fillStyle = 'rgba(36, 63, 65, 0.5)';
+                  con.fillText(Math.round(val * 100) / 100, xp, yp);
+                } else if (val > 0) {
+                  con.fillStyle = `rgba(193, 74, 64, ${0.1 + val * 0.9})`;
+                  con.fillText(Math.round(val * 100) / 100, xp, yp);
+                } else if (val < 0) {
+                  con.fillStyle = `rgba(72, 180, 145, ${0.1 - val * 0.9})`;
+                  con.fillText(Math.round(val * 100) / 100, xp, yp);
+                }
+              }
+            } else if (fieldVals[by][x] != 0) {
               let importance = Math.abs(fieldVals[by][x]) / maxSum;
               importance = 0.1 + (1 - (importance - 1) * (importance - 1)) * 0.9;
               if (fieldVals[by][x] < 0) // good for player 1
@@ -191,7 +251,7 @@ class HexGameBoard {
     con.fillText(this._gameState.name, textx, texty2);
 
     let p1width = con.measureText('Player 1').width;
-    let p2width = con.measureText('Player 1').width;
+    let p2width = con.measureText('Player 2').width;
     con.fillStyle = 'rgba(72, 180, 145, 1)';
     con.fillText('Player 1', - xD * 2 - p1width / 2, texty);
     if (isNaN(winner) && !(this._gameState.currentMove % 2)) con.fillRect(- xD * 2 - p1width, texty + hexSize * 0.25, p1width, 4);
@@ -291,6 +351,32 @@ class HexGameBoard {
       evt.preventDefault();
       this._menu.openMenu();
       this._noOps = true;
+    } else if (key === 'z' || key === 'u') {
+      evt.preventDefault();
+      if (this._stateStack.length > 1) {
+        this._stateStack.pop();
+        this._gameState = this._stateStack[this._stateStack.length - 1];
+        this._cMoveOpts = [];
+        this._hMoveOpts = [];
+        this.redraw();
+      }
+    } else if (key === 'h') {
+      evt.preventDefault();
+      if (this._cMoveOpts.length == 0) {
+        if (this._hMoveOpts.length > 0) {
+          this._cMoveOpts = this._hMoveOpts;
+          this.redraw();
+        } else {
+          this._noOps = true;
+          this._cMoveOpts = getOptionValues(this._gameState);
+          this._noOps = false;
+          this.redraw();
+        }
+      } else {
+        this._hMoveOpts = this._cMoveOpts;
+        this._cMoveOpts = [];
+        this.redraw();
+      }
     }
   }
 
@@ -344,8 +430,13 @@ class HexGameBoard {
       this.redraw();
       if (this._hoverCoords[0] != -1) {
         let nState = this._gameState.play(this._hoverCoords[0], this._hoverCoords[1]);
-        if (nState !== false) this._gameState = nState;
-        this.redraw();
+        if (nState !== false) {
+          this._gameState = nState;
+          this._stateStack.push(this._gameState);
+          this._cMoveOpts = [];
+          this._hMoveOpts = [];
+          this.redraw();
+        }
       }
     }
   }
